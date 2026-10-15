@@ -1,0 +1,981 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#07162F">
+<title>Escarificadora MG · Centro de monitoreo</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap">
+<script src="https://unpkg.com/mqtt@5.10.1/dist/mqtt.min.js"></script>
+<style>
+/* Centro de monitoreo: barra superior compacta, fila de indicadores, planta de la máquina al centro con proceso y medidores a la derecha, gráficas y eventos abajo */
+:root{
+  --bg:#07162F; --panel:#10264A; --card:#1B3563; --card-2:#22406f;
+  --blue:#367CFF; --cyan:#35D6E8; --green:#21D69A; --amber:#F5B341; --orange:#F08A3C; --red:#F0524D;
+  --text:#E8EEF8; --text-2:#8FA3C4; --text-3:#5f7598; --line:rgba(143,163,196,.16); --line-2:rgba(143,163,196,.28);
+  --sans:"Manrope",system-ui,-apple-system,"Segoe UI",sans-serif;
+  --mono:"JetBrains Mono",ui-monospace,Consolas,monospace;
+  --r:12px;
+  color-scheme:dark;
+}
+*{box-sizing:border-box}
+html,body{margin:0}
+body{background:radial-gradient(1200px 600px at 70% -10%,#0f2a57 0%,transparent 60%),var(--bg);background-color:var(--bg);color:var(--text);font:14px/1.45 var(--sans);-webkit-font-smoothing:antialiased;min-height:100vh}
+.mono{font-family:var(--mono);font-variant-numeric:tabular-nums}
+.muted{color:var(--text-2)}
+button{font:600 13px/1 var(--sans);color:var(--text);background:var(--card);border:1px solid var(--line-2);border-radius:9px;padding:9px 13px;cursor:pointer;transition:background .15s,border-color .15s,opacity .15s,transform .08s}
+button:hover:not(:disabled){background:var(--card-2)}
+button:active:not(:disabled){transform:translateY(1px)}
+button:disabled{opacity:.35;cursor:not-allowed}
+button.pri{background:linear-gradient(180deg,#4a8bff,#2f6ef0);border-color:#4a8bff;color:#fff}
+button.ghost{background:transparent}
+button:focus-visible,input:focus-visible,select:focus-visible{outline:2px solid var(--cyan);outline-offset:2px}
+.ico{width:18px;height:18px;flex:none;stroke:currentColor;fill:none;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round}
+
+/* ---------- barra superior ---------- */
+.topbar{position:sticky;top:0;z-index:20;background:rgba(7,22,47,.88);backdrop-filter:blur(10px);border-bottom:1px solid var(--line);padding-top:env(safe-area-inset-top,0px)}
+.topbar .in{max-width:1480px;margin:0 auto;display:flex;align-items:center;gap:18px;padding:10px max(16px,env(safe-area-inset-right,0px)) 10px max(16px,env(safe-area-inset-left,0px));flex-wrap:wrap}
+.logo{display:flex;align-items:center;gap:11px;min-width:0}
+.logo .mark{width:36px;height:36px;border-radius:9px;background:linear-gradient(140deg,#367CFF,#1d4fb8);display:grid;place-items:center;box-shadow:0 4px 14px rgba(54,124,255,.35)}
+.logo b{display:block;font:800 16px/1.1 var(--sans);letter-spacing:-.01em}
+.logo span{display:block;font-size:11.5px;color:var(--text-2);white-space:nowrap}
+.status{display:flex;gap:8px;flex-wrap:wrap;margin-left:auto}
+.pill{display:inline-flex;align-items:center;gap:7px;height:28px;padding:0 11px;border-radius:99px;background:var(--panel);border:1px solid var(--line);font:600 11.5px var(--sans);color:var(--text-2);white-space:nowrap}
+.pill i{width:7px;height:7px;border-radius:50%;background:var(--text-3)}
+.pill.ok{color:var(--text)} .pill.ok i{background:var(--green);box-shadow:0 0 0 3px rgba(33,214,154,.18)}
+.pill.warn i{background:var(--amber)} .pill.bad{color:#ffb3ae} .pill.bad i{background:var(--red)}
+.pill.demo{color:var(--amber);border-color:rgba(245,179,65,.35)}
+.clock{text-align:right;line-height:1.15}
+.clock .t{font:500 17px var(--mono)}
+.clock .d{font-size:11.5px;color:var(--text-2)}
+.top-actions{display:flex;gap:8px}
+.top-actions button{display:inline-flex;align-items:center;gap:7px;height:34px}
+.iconbtn{width:34px;padding:0;justify-content:center}
+@media (max-width:900px){.status{order:3;width:100%;margin-left:0}.clock{margin-left:auto}}
+@media (max-width:700px){.topbar{position:static}.status .pill{height:24px;font-size:10.5px}.plant{overflow-x:auto}.plant svg{min-width:600px}}
+
+.demo-strip{background:repeating-linear-gradient(-45deg,rgba(245,179,65,.14) 0 10px,rgba(245,179,65,.06) 10px 20px);border-bottom:1px solid rgba(245,179,65,.3);color:var(--amber);font:600 12px var(--sans);text-align:center;padding:6px 16px}
+
+.page{max-width:1480px;margin:0 auto;padding-block:16px 40px;padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px));display:grid;gap:14px}
+
+.panel{background:linear-gradient(180deg,rgba(27,53,99,.55),rgba(16,38,74,.9));border:1px solid var(--line);border-radius:var(--r);padding:16px;min-width:0;box-shadow:0 10px 30px rgba(0,0,0,.18)}
+.ph{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:12px;flex-wrap:wrap}
+.ph h2{margin:0;font:700 13px/1.2 var(--sans);letter-spacing:.02em;display:flex;align-items:center;gap:8px}
+.ph h2 .ico{color:var(--cyan);width:16px;height:16px}
+.tag{font:600 10.5px var(--mono);letter-spacing:.06em;text-transform:uppercase;color:var(--text-3)}
+
+/* ---------- indicadores ---------- */
+.kpis{display:grid;grid-template-columns:repeat(9,minmax(0,1fr));gap:10px}
+@media (max-width:1400px){.kpis{grid-template-columns:repeat(5,minmax(0,1fr))}}
+@media (max-width:820px){.kpis{grid-template-columns:repeat(3,minmax(0,1fr))}}
+@media (max-width:560px){.kpis{grid-template-columns:repeat(2,minmax(0,1fr))}}
+.kpi{background:linear-gradient(180deg,var(--card),var(--panel));border:1px solid var(--line);border-radius:11px;padding:11px 12px 10px;display:grid;gap:4px;min-width:0;position:relative;overflow:hidden}
+.kpi .h{display:flex;align-items:center;gap:7px;color:var(--text-2);font:600 11px var(--sans);letter-spacing:.02em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.kpi .h .ico{width:15px;height:15px;color:var(--cyan)}
+.kpi .v{font:600 22px/1.15 var(--mono);letter-spacing:-.02em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.kpi .v small{font:500 11px var(--mono);color:var(--text-2);margin-left:3px}
+.kpi .s{font-size:11px;color:var(--text-2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;display:flex;align-items:center;gap:6px}
+.kpi .s .d{width:6px;height:6px;border-radius:50%;background:var(--text-3);flex:none}
+.kpi.ok .s .d{background:var(--green)} .kpi.run .s .d{background:var(--blue)} .kpi.warn .s .d{background:var(--amber)} .kpi.bad .s .d{background:var(--red)}
+.kpi.bad{border-color:rgba(240,82,77,.55);background:linear-gradient(180deg,rgba(240,82,77,.16),var(--panel))}
+.kpi .spark{height:3px;border-radius:2px;background:rgba(143,163,196,.15);overflow:hidden;margin-top:2px}
+.kpi .spark i{display:block;height:100%;width:0;background:linear-gradient(90deg,var(--blue),var(--cyan));transition:width .5s}
+#kStateV{font-size:16px;line-height:1.7}
+.kpi .v.na{color:var(--text-3);font-size:16px}
+
+/* ---------- zona central ---------- */
+.center{display:grid;grid-template-columns:minmax(0,1.55fr) minmax(330px,1fr);gap:14px;align-items:start}
+@media (max-width:1100px){.center{grid-template-columns:1fr}}
+.side{display:grid;gap:14px;min-width:0}
+
+/* planta */
+.plant{position:relative}
+.plant svg{width:100%;height:auto;display:block}
+.plant .grid-bg{fill:url(#gridpat)}
+.plant .body{fill:#132c55;stroke:#5b7bb0;stroke-width:1.4}
+.plant .body-2{fill:#0f2447;stroke:#5b7bb0;stroke-width:1.4}
+.plant .wire{stroke:#5b7bb0;stroke-width:1.4;fill:none}
+.plant .lead{stroke:rgba(143,163,196,.45);stroke-width:1;fill:none;stroke-dasharray:3 3}
+.plant .lbl{font:600 9.5px var(--mono);fill:var(--text-2);letter-spacing:.05em}
+.plant .lbl-b{font:700 10px var(--mono);fill:var(--text)}
+.plant .tagbox rect{fill:rgba(7,22,47,.9);stroke:var(--line-2);rx:5}
+.plant .tagbox .k{font:600 8.5px var(--mono);fill:var(--text-3);letter-spacing:.06em}
+.plant .tagbox .v{font:600 12px var(--mono);fill:var(--cyan)}
+.plant .tagbox.on rect{stroke:rgba(53,214,232,.6)}
+.plant .tagbox.bad rect{stroke:var(--red)} .plant .tagbox.bad .v{fill:var(--red)}
+.plant .disc{fill:#24477e;stroke:#8fb0e6;stroke-width:1.4}
+.plant .tooth{fill:#8fb0e6}
+.plant .blade{fill:#6f8fc4}
+.plant .spin{transform-box:fill-box;transform-origin:center;animation:spin 1s linear infinite}
+.plant #fan.spin{animation-duration:.4s}
+.plant #water{fill:url(#watergrad);transition:y .6s,height .6s}
+.plant #heater{stroke:#5b7bb0;stroke-width:2.6;fill:none;stroke-linejoin:round;transition:stroke .3s}
+.plant #heater.on{stroke:var(--orange);filter:drop-shadow(0 0 5px rgba(240,138,60,.8))}
+.plant .gate{stroke:var(--text-2);stroke-width:3.4;stroke-linecap:round;transform-box:fill-box;transform-origin:50% 0%;transition:transform .6s,stroke .3s}
+.plant .gate.open{stroke:var(--green);transform:rotate(-70deg)}
+.plant .gate.h{transform-origin:0% 50%}
+.plant .gate.h.open{transform:rotate(60deg)}
+.plant .basket{fill:none;stroke:var(--cyan);stroke-width:1.3;stroke-dasharray:4 3;opacity:.8}
+.plant .holes{fill:url(#holes)}
+.plant .flow{fill:none;stroke:var(--cyan);stroke-width:2.2;stroke-dasharray:2 9;stroke-linecap:round;opacity:0;transition:opacity .3s}
+.plant .flow.on{opacity:1;animation:flow .9s linear infinite}
+.plant .air{fill:none;stroke:var(--text-2);stroke-width:1.4;stroke-dasharray:6 6;opacity:0}
+.plant .air.on{opacity:.8;animation:flow .6s linear infinite reverse}
+.plant .seed{fill:#d9c27a}
+@keyframes spin{to{transform:rotate(360deg)}}
+@keyframes flow{to{stroke-dashoffset:-22}}
+.legend{display:flex;gap:14px;flex-wrap:wrap;font-size:11.5px;color:var(--text-2);margin-top:10px}
+.legend span{display:inline-flex;align-items:center;gap:6px}
+.legend i{width:14px;height:3px;border-radius:2px;display:inline-block}
+
+/* proceso */
+.steps{display:grid;gap:0;position:relative}
+.st{display:grid;grid-template-columns:28px 1fr auto;gap:10px;align-items:start;padding:7px 0;position:relative}
+.st::before{content:"";position:absolute;left:13px;top:30px;bottom:-8px;width:2px;background:var(--line-2)}
+.st:last-child::before{display:none}
+.st .n{width:28px;height:28px;border-radius:50%;display:grid;place-items:center;border:2px solid var(--line-2);background:var(--panel);font:600 11px var(--mono);color:var(--text-2);position:relative;z-index:1}
+.st .tt{font:700 13px/1.25 var(--sans)} .st .ds{font-size:11.5px;color:var(--text-2)}
+.st .bd{font:600 10px var(--mono);letter-spacing:.06em;text-transform:uppercase;padding:3px 7px;border-radius:5px;background:rgba(143,163,196,.1);color:var(--text-2);white-space:nowrap;margin-top:4px}
+.st.active .n{border-color:var(--blue);color:#fff;background:var(--blue);box-shadow:0 0 0 5px rgba(54,124,255,.2)}
+.st.active .bd{background:rgba(54,124,255,.2);color:#9cc0ff}
+.st.done .n{border-color:var(--green);background:rgba(33,214,154,.15);color:var(--green)}
+.st.done::before{background:var(--green)}
+.st.done .bd{background:rgba(33,214,154,.13);color:var(--green)}
+.st.hold .bd{background:rgba(245,179,65,.15);color:var(--amber)}
+.st.err .n{border-color:var(--red);color:var(--red)} .st.err .bd{background:rgba(240,82,77,.15);color:#ffb3ae}
+.prog{height:6px;border-radius:4px;background:rgba(143,163,196,.15);overflow:hidden;margin:4px 0 12px}
+.prog i{display:block;height:100%;width:0;background:linear-gradient(90deg,var(--blue),var(--cyan));transition:width .6s}
+
+/* medidores */
+.gauges{display:grid;grid-template-columns:minmax(0,280px) minmax(0,1fr);gap:24px;align-items:center}
+@media (max-width:520px){.gauges{grid-template-columns:1fr}}
+.gauge svg{width:100%;height:auto;display:block}
+.gauge .trk{fill:none;stroke:rgba(143,163,196,.15);stroke-width:12;stroke-linecap:round}
+.gauge .val{fill:none;stroke:url(#gtemp);stroke-width:12;stroke-linecap:round;transition:stroke-dasharray .6s}
+.gauge .sp{stroke:var(--amber);stroke-width:2.5;stroke-linecap:round}
+.gauge .lim{stroke:var(--red);stroke-width:2.5;stroke-linecap:round}
+.gauge .tk{font:500 9px var(--mono);fill:var(--text-3)}
+.gauge .num{font:600 30px var(--mono);fill:var(--text);letter-spacing:-1px}
+.gauge .u{font:500 10px var(--mono);fill:var(--text-2)}
+.minis{display:grid;gap:12px}
+.mini .r{display:flex;justify-content:space-between;align-items:baseline;font-size:11.5px;color:var(--text-2)}
+.mini .r b{font:600 17px var(--mono);color:var(--text)}
+.mini .r b small{font-size:10px;color:var(--text-2);margin-left:2px}
+.bar{position:relative;height:7px;border-radius:4px;background:rgba(143,163,196,.15);margin-top:5px}
+.bar i{position:absolute;inset:0 auto 0 0;border-radius:4px;background:linear-gradient(90deg,var(--blue),var(--cyan));transition:width .5s}
+.bar .m{position:absolute;top:-3px;bottom:-3px;width:2px;background:var(--red);opacity:.85}
+.bar .m.a{background:var(--amber)}
+.cmp{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:12px}
+.cmp div{background:rgba(7,22,47,.45);border:1px solid var(--line);border-radius:9px;padding:8px 10px}
+.cmp .k{font:600 10px var(--mono);letter-spacing:.06em;text-transform:uppercase;color:var(--text-3)}
+.cmp .v{font:600 15px var(--mono)}
+
+/* controles */
+.ctrls{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.ctrls button{height:40px;display:flex;align-items:center;justify-content:center;gap:7px}
+.ctrls .stop:hover:not(:disabled){background:linear-gradient(180deg,#ff746f,#d6352f)}
+.ctrls .stop{grid-column:1/-1;height:44px;background:linear-gradient(180deg,#f2625d,#c9302b);border-color:#f2625d;color:#fff;font-size:14px;letter-spacing:.06em}
+.params{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:12px}
+.params label{display:grid;gap:5px;font:600 11px var(--sans);color:var(--text-2)}
+.field{display:flex;align-items:center;background:rgba(7,22,47,.55);border:1px solid var(--line-2);border-radius:9px;overflow:hidden}
+.field button{border:0;border-radius:0;background:transparent;width:34px;height:38px;padding:0;font:500 16px var(--mono)}
+.field input{flex:1;min-width:0;border:0;background:transparent;color:var(--text);font:600 15px var(--mono);text-align:center;height:38px;-moz-appearance:textfield}
+.field input::-webkit-outer-spin-button,.field input::-webkit-inner-spin-button{-webkit-appearance:none;margin:0}
+.params .rd{grid-column:1/-1;font-size:11.5px;color:var(--text-2);display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap}
+.params .rd b{color:var(--text);font-family:var(--mono);font-weight:600}
+.send{grid-column:1/-1;height:38px}
+.fb{font-size:11.5px;color:var(--text-2);margin-top:10px;min-height:1.4em}
+
+/* gráficas */
+.charts{display:grid;grid-template-columns:minmax(0,1.6fr) minmax(0,1fr) minmax(0,1fr);gap:14px}
+@media (max-width:1200px){.charts{grid-template-columns:1fr 1fr}.charts>:first-child{grid-column:1/-1}}
+@media (max-width:700px){.charts{grid-template-columns:1fr}}
+canvas{width:100%;display:block}
+.seg{display:inline-flex;background:rgba(7,22,47,.55);border:1px solid var(--line);border-radius:8px;padding:2px}
+.seg button{border:0;background:transparent;padding:6px 10px;font-size:11.5px;color:var(--text-2);border-radius:6px}
+.seg button[aria-pressed="true"]{background:var(--card);color:var(--text)}
+.chart-foot{display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap;font-size:11px;color:var(--text-2);margin-top:6px}
+.nodata{display:grid;place-items:center;color:var(--text-3);font-size:12px;text-align:center;padding:8px}
+
+/* alertas y eventos */
+.bottom{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.6fr);gap:14px}
+@media (max-width:1000px){.bottom{grid-template-columns:1fr}}
+.alerts{display:grid;gap:8px}
+.al{display:grid;grid-template-columns:auto 1fr auto;gap:10px;align-items:center;padding:10px 12px;border-radius:10px;border:1px solid var(--line);background:rgba(7,22,47,.4)}
+.al .ico{width:18px;height:18px}
+.al.bad{border-color:rgba(240,82,77,.5);background:rgba(240,82,77,.1)} .al.bad .ico{color:var(--red)}
+.al.warn{border-color:rgba(245,179,65,.45);background:rgba(245,179,65,.08)} .al.warn .ico{color:var(--amber)}
+.al.ok{border-color:rgba(33,214,154,.4);background:rgba(33,214,154,.08)} .al.ok .ico{color:var(--green)}
+.al.info .ico{color:var(--cyan)}
+.al b{display:block;font-size:13px} .al span{font-size:11.5px;color:var(--text-2)}
+.al time{font:500 11px var(--mono);color:var(--text-3)}
+.watch{display:flex;flex-wrap:wrap;gap:6px;margin-top:12px;padding-top:12px;border-top:1px solid var(--line)}
+.watch span{font:600 10.5px var(--sans);padding:4px 8px;border-radius:6px;background:rgba(33,214,154,.1);color:var(--green);display:inline-flex;align-items:center;gap:5px}
+.watch span::before{content:"";width:5px;height:5px;border-radius:50%;background:currentColor}
+.watch span.on{background:rgba(240,82,77,.15);color:#ff9d97}
+.watch span.pz{background:rgba(245,179,65,.14);color:var(--amber)}
+.logtools{display:flex;gap:8px;flex-wrap:wrap}
+select{font:600 12px var(--sans);color:var(--text);background:var(--card);border:1px solid var(--line-2);border-radius:8px;padding:7px 9px}
+.logbox{max-height:360px;overflow:auto;border:1px solid var(--line);border-radius:10px}
+table{width:100%;border-collapse:collapse;font-size:12.5px}
+th,td{padding:8px 11px;text-align:left;border-bottom:1px solid var(--line);vertical-align:top}
+th{position:sticky;top:0;background:#132b52;font:600 10px var(--mono);letter-spacing:.08em;text-transform:uppercase;color:var(--text-2);z-index:1}
+td.t{font-family:var(--mono);color:var(--text-2);white-space:nowrap}
+.ty{font:600 10px var(--mono);letter-spacing:.04em;text-transform:uppercase;padding:3px 7px;border-radius:5px;white-space:nowrap;display:inline-block}
+.ty.falla{background:rgba(240,82,77,.16);color:#ff9d97}
+.ty.alerta{background:rgba(245,179,65,.15);color:var(--amber)}
+.ty.proceso{background:rgba(54,124,255,.18);color:#9cc0ff}
+.ty.orden{background:rgba(53,214,232,.14);color:var(--cyan)}
+.ty.conexion{background:rgba(143,163,196,.14);color:var(--text-2)}
+.ty.ok{background:rgba(33,214,154,.13);color:var(--green)}
+.empty{padding:26px;text-align:center;color:var(--text-3)}
+
+/* diálogo */
+dialog{border:1px solid var(--line-2);border-radius:14px;padding:0;background:var(--panel);color:var(--text);width:min(430px,calc(100vw - 32px));box-shadow:0 30px 80px rgba(0,0,0,.5)}
+dialog::backdrop{background:rgba(3,10,24,.7)}
+dialog form{display:grid;gap:13px;padding:20px}
+dialog h3{margin:0;font:800 18px var(--sans)}
+dialog p{margin:0;color:var(--text-2);font-size:12.5px}
+dialog label{display:grid;gap:5px;font:600 11px var(--sans);color:var(--text-2)}
+dialog input{font:500 14px var(--mono);color:var(--text);background:rgba(7,22,47,.6);border:1px solid var(--line-2);border-radius:9px;padding:10px 11px;width:100%}
+.dl-btns{display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end}
+.toast{position:fixed;left:50%;bottom:calc(18px + env(safe-area-inset-bottom,0px));transform:translate(-50%,16px);opacity:0;background:#e8eef8;color:#07162F;font:600 13px var(--sans);padding:10px 15px;border-radius:9px;transition:all .25s;pointer-events:none;z-index:50;max-width:calc(100vw - 32px)}
+.toast.show{opacity:1;transform:translate(-50%,0)}
+@media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
+</style>
+</head>
+<body>
+
+<!-- ===================== ICONOS ===================== -->
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <symbol id="i-state" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="14" rx="2"/><path d="M7 14l3-3 3 2 4-5"/><path d="M8 21h8"/></symbol>
+  <symbol id="i-disc" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="2"/><path d="M12 4v3M12 17v3M4 12h3M17 12h3"/></symbol>
+  <symbol id="i-temp" viewBox="0 0 24 24"><path d="M10 14V5a2 2 0 1 1 4 0v9a4 4 0 1 1-4 0z"/><path d="M12 9v6"/></symbol>
+  <symbol id="i-timer" viewBox="0 0 24 24"><circle cx="12" cy="13" r="8"/><path d="M12 9v4l3 2M9 2h6"/></symbol>
+  <symbol id="i-cycle" viewBox="0 0 24 24"><path d="M20 11a8 8 0 0 0-14.9-3M4 13a8 8 0 0 0 14.9 3"/><path d="M4 4v4h4M20 20v-4h-4"/></symbol>
+  <symbol id="i-motor" viewBox="0 0 24 24"><rect x="4" y="6" width="12" height="12" rx="2"/><path d="M16 12h4M7 9v6M10 9v6M13 9v6"/></symbol>
+  <symbol id="i-fan" viewBox="0 0 24 24"><circle cx="12" cy="12" r="1.6"/><path d="M12 10.4C11 7 12.5 4 15 4.5c2 .4 1.6 3.6-1.4 6.1M13.4 12.9c3.4.8 5.3 3.6 3.6 5.4-1.4 1.5-4-.6-4.6-4.4M10.6 12.8C8 15.2 4.8 15 4.6 12.5c-.2-2.1 2.9-2.7 6-1.2"/></symbol>
+  <symbol id="i-gate" viewBox="0 0 24 24"><path d="M4 4v16M20 4v16M4 12h7l5-5"/></symbol>
+  <symbol id="i-wifi" viewBox="0 0 24 24"><path d="M2 9a15 15 0 0 1 20 0M5 12.5a10 10 0 0 1 14 0M8.5 16a5 5 0 0 1 7 0"/><circle cx="12" cy="19" r="1"/></symbol>
+  <symbol id="i-gear" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></symbol>
+  <symbol id="i-play" viewBox="0 0 24 24"><path d="M7 5l12 7-12 7z"/></symbol>
+  <symbol id="i-pause" viewBox="0 0 24 24"><path d="M8 5v14M16 5v14"/></symbol>
+  <symbol id="i-sq" viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="1.5"/></symbol>
+  <symbol id="i-check" viewBox="0 0 24 24"><path d="M5 12.5l4.5 4.5L19 7.5"/></symbol>
+  <symbol id="i-alert" viewBox="0 0 24 24"><path d="M12 3l10 18H2z"/><path d="M12 10v5M12 18v.01"/></symbol>
+  <symbol id="i-info" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 11v6M12 7.5v.01"/></symbol>
+  <symbol id="i-link" viewBox="0 0 24 24"><path d="M3 12h4l3-7 4 14 3-7h4"/></symbol>
+  <symbol id="i-chart" viewBox="0 0 24 24"><path d="M4 20V4M4 20h16M8 16l4-5 3 3 5-7"/></symbol>
+  <symbol id="i-list" viewBox="0 0 24 24"><path d="M9 6h11M9 12h11M9 18h11M4 6h.01M4 12h.01M4 18h.01"/></symbol>
+  <symbol id="i-sliders" viewBox="0 0 24 24"><path d="M4 7h10M18 7h2M4 17h4M12 17h8"/><circle cx="16" cy="7" r="2"/><circle cx="10" cy="17" r="2"/></symbol>
+  <symbol id="i-plant" viewBox="0 0 24 24"><rect x="3" y="3" width="8" height="8" rx="1.5"/><rect x="13" y="13" width="8" height="8" rx="1.5"/><path d="M11 7h4v6"/></symbol>
+</svg>
+
+<!-- ===================== BARRA SUPERIOR ===================== -->
+<header class="topbar">
+  <div class="in">
+    <div class="logo">
+      <div class="mark"><svg class="ico" style="color:#fff;width:20px;height:20px"><use href="#i-disc"/></svg></div>
+      <div><b>Escarificadora MG</b><span>Integrador III | Equipo La Buki</span></div>
+    </div>
+    <div class="status">
+      <span class="pill" id="pIot"><i></i>IoT: sin supervisión</span>
+      <span class="pill" id="pAio"><i></i>Adafruit IO: desconectado</span>
+      <span class="pill" id="pEsp"><i></i>ESP32: sin reporte</span>
+    </div>
+    <div class="clock"><div class="t" id="clkT">--:--:--</div><div class="d" id="clkD">—</div></div>
+    <div class="top-actions">
+      <button type="button" class="pri" id="btnSup"><svg class="ico"><use href="#i-play"/></svg><span>Iniciar supervisión</span></button>
+      <button type="button" class="iconbtn" id="btnCfg" aria-label="Configuración"><svg class="ico"><use href="#i-gear"/></svg></button>
+    </div>
+  </div>
+  <div class="demo-strip" id="demoStrip" hidden>MODO DEMOSTRACIÓN · todos los valores son simulados en este navegador · no se lee ni se envía nada a la máquina</div>
+</header>
+
+<main class="page">
+
+  <!-- ===================== INDICADORES ===================== -->
+  <section class="kpis" aria-label="Indicadores principales">
+    <div class="kpi" id="kState"><div class="h"><svg class="ico"><use href="#i-state"/></svg>Estado general</div><div class="v na" id="kStateV">Sin datos</div><div class="s"><span class="d"></span><span id="kStateS">desconectado</span></div></div>
+    <div class="kpi" id="kRpm"><div class="h"><svg class="ico"><use href="#i-disc"/></svg>Disco abrasivo</div><div class="v na" id="kRpmV">Sin datos</div><div class="s"><span class="d"></span><span id="kRpmS">velocidad comandada</span></div></div>
+    <div class="kpi" id="kTemp"><div class="h"><svg class="ico"><use href="#i-temp"/></svg>Temperatura agua</div><div class="v na" id="kTempV">Sin datos</div><div class="s"><span class="d"></span><span id="kTempS">TT-01 · DS18B20</span></div><div class="spark"><i id="kTempB"></i></div></div>
+    <div class="kpi" id="kTime"><div class="h"><svg class="ico"><use href="#i-timer"/></svg>Tiempo restante</div><div class="v na" id="kTimeV">Sin datos</div><div class="s"><span class="d"></span><span id="kTimeS">etapa actual</span></div><div class="spark"><i id="kTimeB"></i></div></div>
+    <div class="kpi" id="kCyc"><div class="h"><svg class="ico"><use href="#i-cycle"/></svg>Ciclos hoy</div><div class="v na" id="kCycV">Sin datos</div><div class="s"><span class="d"></span><span id="kCycS">completados / iniciados</span></div></div>
+    <div class="kpi" id="kMot"><div class="h"><svg class="ico"><use href="#i-motor"/></svg>Motor NEMA 17</div><div class="v na" id="kMotV">Sin datos</div><div class="s"><span class="d"></span><span id="kMotS">corriente ACS712</span></div></div>
+    <div class="kpi" id="kFan"><div class="h"><svg class="ico"><use href="#i-fan"/></svg>Ventilación</div><div class="v na" id="kFanV">Sin datos</div><div class="s"><span class="d"></span><span id="kFanS">extracción de rebabas</span></div></div>
+    <div class="kpi" id="kGate"><div class="h"><svg class="ico"><use href="#i-gate"/></svg>Compuertas</div><div class="v na" id="kGateV">Sin datos</div><div class="s"><span class="d"></span><span id="kGateS">C-1 · C-2</span></div></div>
+    <div class="kpi" id="kNet"><div class="h"><svg class="ico"><use href="#i-wifi"/></svg>Conexión IoT</div><div class="v na" id="kNetV">Sin datos</div><div class="s"><span class="d"></span><span id="kNetS">señal WiFi del ESP32</span></div></div>
+  </section>
+
+  <!-- ===================== ZONA CENTRAL ===================== -->
+  <div class="center">
+    <div class="side">
+    <section class="panel plant">
+      <div class="ph"><h2><svg class="ico"><use href="#i-plant"/></svg>Planta · Escarificadora MG</h2><span class="tag" id="plantTag">sin reporte</span></div>
+      <svg viewBox="0 0 700 430" role="img" aria-label="Diagrama de la escarificadora con el estado de cada componente">
+        <defs>
+          <pattern id="gridpat" width="20" height="20" patternUnits="userSpaceOnUse"><path d="M20 0H0V20" fill="none" stroke="rgba(143,163,196,.07)" stroke-width="1"/></pattern>
+          <linearGradient id="watergrad" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#35D6E8" stop-opacity=".38"/><stop offset="1" stop-color="#367CFF" stop-opacity=".22"/></linearGradient>
+          <pattern id="holes" width="9" height="9" patternUnits="userSpaceOnUse"><circle cx="4.5" cy="4.5" r="1.1" fill="rgba(53,214,232,.45)"/></pattern>
+          <marker id="arr" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="#8FA3C4"/></marker>
+        </defs>
+        <rect class="grid-bg" x="0" y="0" width="700" height="430"/>
+
+        <!-- flujo de semilla -->
+        <path class="flow" id="flow1" d="M170 52 V128"/>
+        <path class="flow" id="flow2" d="M262 214 L332 250 L332 300 L400 312"/>
+
+        <!-- tolva -->
+        <path class="body" d="M100 28 H240 L198 92 H142 Z"/>
+        <circle class="seed" cx="150" cy="44" r="2.4"/><circle class="seed" cx="168" cy="40" r="2.4"/><circle class="seed" cx="186" cy="46" r="2.4"/><circle class="seed" cx="160" cy="52" r="2.4"/><circle class="seed" cx="178" cy="56" r="2.4"/>
+        <rect class="body-2" x="156" y="92" width="28" height="18"/>
+        <path class="lead" d="M240 36 H290"/><text class="lbl" x="294" y="39">TOLVA · carga manual</text>
+
+        <!-- cámara de escarificado -->
+        <rect class="body" x="88" y="110" width="164" height="128" rx="10"/>
+        <g id="disc">
+          <circle class="disc" cx="170" cy="172" r="44"/>
+          <g id="teeth"></g>
+          <circle cx="170" cy="172" r="14" fill="#132c55" stroke="#8fb0e6" stroke-width="1.2"/>
+          <circle cx="170" cy="172" r="4" fill="#8fb0e6"/>
+        </g>
+        <text class="lbl" x="104" y="230">DISCO ABRASIVO</text>
+
+        <!-- motor NEMA 17 -->
+        <rect class="body-2" x="164" y="238" width="12" height="16"/>
+        <rect class="body" x="134" y="254" width="72" height="56" rx="5"/>
+        <path class="wire" d="M146 262 V302 M158 262 V302 M170 262 V302 M182 262 V302 M194 262 V302" opacity=".5"/>
+        <path class="lead" d="M170 310 V322"/>
+        <g class="tagbox" id="tgMot" transform="translate(112 322)"><rect width="116" height="36"/><text class="k" x="8" y="13">M-01 · NEMA 17</text><text class="v" id="tgMotV" x="8" y="29">—</text></g>
+
+        <!-- ventilador -->
+        <path class="body-2" d="M88 150 H62 V196 H88"/>
+        <circle class="body" cx="44" cy="173" r="24"/>
+        <g id="fan"><ellipse class="blade" cx="44" cy="160" rx="5" ry="12"/><ellipse class="blade" cx="44" cy="160" rx="5" ry="12" transform="rotate(120 44 173)"/><ellipse class="blade" cx="44" cy="160" rx="5" ry="12" transform="rotate(240 44 173)"/><circle cx="44" cy="173" r="4" fill="#8fb0e6"/></g>
+        <path class="air" id="air" d="M20 173 H2" marker-end="url(#arr)"/>
+        <path class="lead" d="M44 197 V214"/>
+        <g class="tagbox" id="tgFan" transform="translate(2 214)"><rect width="82" height="36"/><text class="k" x="8" y="13">VENT-01</text><text class="v" id="tgFanV" x="8" y="29">—</text></g>
+
+        <!-- compuerta 1: descarga lateral -->
+        <path class="body-2" d="M252 196 H272 L344 240 V300 H322 V252 L262 220 H252 Z" opacity=".95"/>
+        <line class="gate" id="gate1" x1="256" y1="196" x2="256" y2="222"/>
+        <path class="lead" d="M276 196 V150 H300"/><text class="lbl" x="304" y="146">C-1 · descarga lateral</text><text class="lbl" x="304" y="158" id="lblG1" style="fill:var(--text-3)">servo GPIO15</text>
+
+        <!-- tanque de tratamiento térmico -->
+        <rect class="body" x="300" y="300" width="300" height="118" rx="12"/>
+        <rect id="water" x="304" y="318" width="292" height="96" rx="9"/>
+        <rect class="holes" x="352" y="314" width="170" height="86" rx="6"/>
+        <rect class="basket" x="352" y="314" width="170" height="86" rx="6"/>
+        <text class="lbl" x="437" y="362" text-anchor="middle" style="fill:var(--cyan)">CANASTILLA PERFORADA</text>
+        <polyline id="heater" points="318,406 330,396 342,406 354,396 366,406 378,396 390,406 402,396 414,406 426,396 438,406 450,396 462,406 474,396 486,406 498,396 510,406 522,396 534,406 546,396 558,406 570,396 582,406"/>
+        <path class="lead" d="M300 402 H252"/>
+        <g class="tagbox" id="tgHeat" transform="translate(128 384)"><rect width="122" height="36"/><text class="k" x="8" y="13">R-01 · CALENTADOR</text><text class="v" id="tgHeatV" x="8" y="29">—</text></g>
+        <!-- sensor de temperatura -->
+        <path class="wire" d="M560 262 V372" style="stroke:#8fb0e6"/>
+        <circle cx="560" cy="376" r="5" fill="#8fb0e6"/>
+        <path class="lead" d="M560 262 V244 H604"/>
+        <g class="tagbox" id="tgTemp" transform="translate(588 206)"><rect width="104" height="36"/><text class="k" x="8" y="13">TT-01 · DS18B20</text><text class="v" id="tgTempV" x="8" y="29">—</text></g>
+        <!-- nivel -->
+        <path class="wire" d="M584 262 V318" style="stroke:#8fb0e6"/>
+        <circle id="float" cx="584" cy="322" r="6" fill="#132c55" stroke="#8fb0e6" stroke-width="1.4"/>
+        <path class="lead" d="M590 322 H640 V292"/>
+        <g class="tagbox" id="tgLvl" transform="translate(604 254)"><rect width="88" height="36"/><text class="k" x="8" y="13">LS-01 · NIVEL</text><text class="v" id="tgLvlV" x="8" y="29">—</text></g>
+        <text class="lbl" x="312" y="294">TANQUE · TRATAMIENTO TÉRMICO</text>
+
+        <!-- compuerta 2 -->
+        <path class="body-2" d="M600 372 H660 V392 H600 Z"/>
+        <line class="gate h" id="gate2" x1="626" y1="372" x2="626" y2="392"/>
+        <text class="lbl" x="604" y="410">C-2 · por definir</text>
+        <path class="wire" d="M660 382 H690" marker-end="url(#arr)"/>
+      </svg>
+      <div class="legend">
+        <span><i style="background:var(--cyan)"></i>flujo de semilla (cuando el proceso lo confirma)</span>
+        <span><i style="background:var(--green)"></i>compuerta abierta</span>
+        <span><i style="background:var(--orange)"></i>calentador encendido</span>
+      </div>
+    </section>
+      <section class="panel">
+        <div class="ph"><h2><svg class="ico"><use href="#i-temp"/></svg>Medición en vivo</h2><span class="tag" id="measTag">—</span></div>
+        <div class="gauges">
+          <div class="gauge">
+            <svg viewBox="0 0 200 128" aria-label="Medidor de temperatura">
+              <defs><linearGradient id="gtemp" x1="0" x2="1"><stop offset="0" stop-color="#367CFF"/><stop offset=".7" stop-color="#35D6E8"/><stop offset="1" stop-color="#F08A3C"/></linearGradient></defs>
+              <path class="trk" d="M24 112 A76 76 0 0 1 176 112"/>
+              <path class="val" id="gArc" d="M24 112 A76 76 0 0 1 176 112" pathLength="100" stroke-dasharray="0 100"/>
+              <line class="sp" id="gSp"/><line class="lim" id="gLim"/>
+              <g id="gTicks"></g>
+              <text class="num" id="gNum" x="100" y="100" text-anchor="middle">--.-</text>
+              <text class="u" x="100" y="118" text-anchor="middle">°C · agua</text>
+            </svg>
+          </div>
+          <div class="minis">
+            <div class="mini"><div class="r"><span>Corriente motor</span><b id="mI">--<small>A</small></b></div><div class="bar"><i id="mIb" style="width:0"></i><span class="m a" style="left:8%"></span><span class="m" style="left:80%"></span></div></div>
+            <div class="mini"><div class="r"><span>Voltaje fuente</span><b id="mV">--<small>V</small></b></div><div class="bar"><i id="mVb" style="width:0"></i><span class="m" style="left:71.4%"></span></div></div>
+            <div class="mini"><div class="r"><span>Señal WiFi</span><b id="mR">--<small>dBm</small></b></div><div class="bar"><i id="mRb" style="width:0"></i></div></div>
+          </div>
+        </div>
+        <div class="cmp">
+          <div><div class="k">Configurado</div><div class="v" id="cfgT">— °C</div></div>
+          <div><div class="k">Medido</div><div class="v" id="meaT">— °C</div></div>
+        </div>
+      </section>
+    </div>
+
+    <div class="side">
+      <section class="panel">
+        <div class="ph"><h2><svg class="ico"><use href="#i-cycle"/></svg>Seguimiento del ciclo</h2><span class="tag" id="cycTag">sin ciclo</span></div>
+        <div class="prog"><i id="progBar"></i></div>
+        <div class="steps" id="steps"></div>
+      </section>
+
+
+
+      <section class="panel">
+        <div class="ph"><h2><svg class="ico"><use href="#i-sliders"/></svg>Control y parámetros</h2><span class="tag" id="ctlTag">bloqueado</span></div>
+        <div class="ctrls">
+          <button type="button" class="pri" id="cStart"><svg class="ico"><use href="#i-play"/></svg>Iniciar ciclo</button>
+          <button type="button" id="cPause"><svg class="ico"><use href="#i-pause"/></svg><span>Pausar</span></button>
+          <button type="button" id="cReset" style="grid-column:1/-1"><svg class="ico"><use href="#i-check"/></svg>Reconocer falla / volver a reposo</button>
+          <button type="button" class="stop" id="cStop"><svg class="ico"><use href="#i-sq"/></svg>PARO DE EMERGENCIA</button>
+        </div>
+        <form class="params" id="spForm">
+          <label>Temperatura objetivo (°C)<div class="field"><button type="button" data-t="spT" data-d="-0.5" aria-label="Bajar">−</button><input type="number" id="spT" step="0.5" min="25" max="49" value="40"><button type="button" data-t="spT" data-d="0.5" aria-label="Subir">+</button></div></label>
+          <label>Escarificado (min)<div class="field"><button type="button" data-t="spM" data-d="-0.5" aria-label="Bajar">−</button><input type="number" id="spM" step="0.5" min="0.5" max="120" placeholder="—"><button type="button" data-t="spM" data-d="0.5" aria-label="Subir">+</button></div></label>
+          <div class="rd"><span>Tratamiento térmico: <b>15:00</b> (fijo en firmware)</span><span>Disco: <b id="rdHz">— pasos/s</b> (firmware)</span></div>
+          <button type="submit" class="send" id="spSend">Enviar parámetros a la máquina</button>
+          <div class="rd"><span>Valores que reporta la máquina:</span><b id="spEcho">sin dato</b></div>
+        </form>
+        <div class="fb" id="cFb">Inicia la supervisión para habilitar los mandos.</div>
+      </section>
+    </div>
+  </div>
+
+  <!-- ===================== GRÁFICAS ===================== -->
+  <section class="charts">
+    <div class="panel">
+      <div class="ph"><h2><svg class="ico"><use href="#i-chart"/></svg><span id="c1Title">Temperatura del agua</span></h2>
+        <div class="seg" role="group" aria-label="Variable">
+          <button type="button" data-s="temp-agua" aria-pressed="true">Temperatura</button>
+          <button type="button" data-s="corriente" aria-pressed="false">Corriente</button>
+          <button type="button" data-s="voltaje" aria-pressed="false">Voltaje</button>
+        </div></div>
+      <canvas id="c1" style="height:230px"></canvas>
+      <div class="chart-foot"><span id="c1Info">Sin lecturas</span><span id="c1Leg"></span></div>
+    </div>
+    <div class="panel">
+      <div class="ph"><h2><svg class="ico"><use href="#i-motor"/></svg>Motor en funcionamiento por ciclo</h2><span class="tag">min</span></div>
+      <canvas id="c2" style="height:230px"></canvas>
+      <div class="chart-foot"><span id="c2Info">Se calcula del estado del motor</span></div>
+    </div>
+    <div class="panel">
+      <div class="ph"><h2><svg class="ico"><use href="#i-cycle"/></svg>Historial de ciclos</h2><span class="tag">duración</span></div>
+      <canvas id="c3" style="height:230px"></canvas>
+      <div class="chart-foot"><span id="c3Info">Sin ciclos registrados</span><span><b style="color:var(--green)">■</b> completo <b style="color:var(--red)">■</b> falla/paro <b style="color:var(--text-2)">■</b> detenido</span></div>
+    </div>
+  </section>
+
+  <!-- ===================== ALERTAS Y EVENTOS ===================== -->
+  <section class="bottom">
+    <div class="panel">
+      <div class="ph"><h2><svg class="ico"><use href="#i-alert"/></svg>Alertas activas</h2><span class="tag" id="alTag">—</span></div>
+      <div class="alerts" id="alerts"></div>
+      <div class="watch" id="watch"></div>
+    </div>
+    <div class="panel">
+      <div class="ph"><h2><svg class="ico"><use href="#i-list"/></svg>Registro de eventos</h2>
+        <div class="logtools">
+          <select id="evFilter" aria-label="Filtrar eventos"><option value="all">Todos</option><option value="falla">Fallas</option><option value="alerta">Alertas</option><option value="proceso">Proceso</option><option value="orden">Órdenes</option><option value="conexion">Conexión</option></select>
+          <select id="logMode" aria-label="Tipo de registro"><option value="ev">Eventos</option><option value="raw">Datos crudos</option></select>
+          <button type="button" id="btnCsv">CSV</button>
+        </div></div>
+      <div class="logbox"><table><thead id="logHead"><tr><th>Hora</th><th>Tipo</th><th>Descripción</th></tr></thead><tbody id="logBody"><tr><td colspan="3" class="empty">Sin eventos. Inicia la supervisión para ver la actividad de la máquina.</td></tr></tbody></table></div>
+    </div>
+  </section>
+</main>
+
+<dialog id="dlg">
+  <form id="cfgForm" method="dialog">
+    <h3>Configuración de supervisión</h3>
+    <p>Datos de tu cuenta de Adafruit IO. La clave se guarda solo en este navegador y nunca se publica en la página.</p>
+    <label>Usuario de Adafruit IO<input type="text" id="aioUser" autocomplete="username"></label>
+    <label>Clave AIO (Active Key)<input type="password" id="aioKey" autocomplete="current-password"></label>
+    <div class="dl-btns">
+      <button type="button" id="btnDemo">Modo demostración</button>
+      <button type="button" class="ghost" id="btnClose">Cancelar</button>
+      <button type="submit" class="pri">Guardar y supervisar</button>
+    </div>
+  </form>
+</dialog>
+<div class="toast" id="toast" role="status"></div>
+
+<script>
+/* ==========================================================================
+   MODELO DE DATOS — mismos feeds que usa main.py del ESP32 (10/10 plan gratis)
+   ========================================================================== */
+const FEEDS = ['temp-agua','tiempo-restante','etapa','actuadores','alarmas','rssi','corriente','voltaje','comando','setpoints'];
+const ETAPA = ['Reposo','Escarificando','Calentando agua','Tratamiento térmico','Ciclo terminado','Paro de emergencia','Falla'];
+const ACT = {motor:1, vent:2, c1:4, c2:8, calent:16, rele:32};
+const FAULTS = [
+  {bit:1,  name:'Error de sensor de temperatura', short:'Sensor TT-01'},
+  {bit:2,  name:'Sobretemperatura (> 50 °C)',    short:'Sobretemp.'},
+  {bit:4,  name:'Sin agua en el tanque',          short:'Nivel agua'},
+  {bit:8,  name:'Voltaje bajo (< 10 V)',          short:'Voltaje'},
+  {bit:16, name:'El agua no calienta a tiempo',   short:'Calentamiento'},
+  {bit:32, name:'Sobrecarga del motor (> 2 A)',   short:'Sobrecarga'},
+  {bit:64, name:'Motor detenido (< 0.2 A)',       short:'Motor detenido'},
+  {bit:128,name:'Paro de emergencia activado',    short:'Emergencia'},
+];
+const PAUSE_BIT = 256;
+const T_LIMIT = 50, REMOJO = 900, STEPS_REV = 200;   // A4988 a paso completo, motor de 1.8°
+const STEPS = [
+  {k:'carga',  t:'Alimentación de semillas', d:'carga manual en la tolva'},
+  {k:1,        t:'Escarificación',           d:'disco abrasivo + ventilador'},
+  {k:2,        t:'Calentamiento del agua',   d:'hasta la temperatura objetivo'},
+  {k:'desc',   t:'Descarga lateral',          d:'C-1 abre, la semilla cae al tanque'},
+  {k:3,        t:'Tratamiento térmico',       d:'15 min a temperatura objetivo'},
+  {k:4,        t:'Extracción con canastilla', d:'fin de ciclo · retiro manual'},
+];
+
+let raw = [];               // {t, feed, v}   datos tal como llegan
+let events = [];            // {t, type, desc}
+const S = {};               // último valor por feed {v,t}
+let client=null, user='', demo=null, lastEsp=null, wasStale=false, series='temp-agua';
+
+const $ = id => document.getElementById(id);
+const pad = n => String(n).padStart(2,'0');
+const fT = d => d.toLocaleTimeString('es-MX',{hour12:false});
+const fD = d => d.toLocaleDateString('es-MX',{day:'2-digit',month:'2-digit',year:'numeric'});
+const hm = d => pad(d.getHours())+':'+pad(d.getMinutes());
+const mmss = s => { s=Math.max(0,Math.round(s)); return pad(Math.floor(s/60))+':'+pad(s%60); };
+const num = f => S[f] ? parseFloat(S[f].v) : null;
+const actOn = b => S['actuadores'] ? ((+S['actuadores'].v) & b) !== 0 : null;
+const alarms = () => S['alarmas'] ? +S['alarmas'].v : 0;
+function store(k,v){ try{ localStorage.setItem(k,v); }catch(e){} }
+function load(k){ try{ return localStorage.getItem(k)||''; }catch(e){ return ''; } }
+let tt; function toast(m){ const e=$('toast'); e.textContent=m; e.classList.add('show'); clearTimeout(tt); tt=setTimeout(()=>e.classList.remove('show'),2600); }
+function sp(){ if(!S['setpoints']) return null; const p=String(S['setpoints'].v).split(';'); const f=x=>{const n=parseFloat(x); return isNaN(n)?null:n;}; return {temp:f(p[0]), min:f(p[1]), hz:f(p[2])}; }
+
+/* ---------- reloj y vigilancia de conexión ---------- */
+function tick(){
+  const n=new Date(); $('clkT').textContent=fT(n);
+  const d=n.toLocaleDateString('es-MX',{weekday:'short',day:'numeric',month:'short',year:'numeric'}); $('clkD').textContent=d.charAt(0).toUpperCase()+d.slice(1);
+  const sup = !!demo || !!(client && client.connected);
+  if(sup && lastEsp){
+    const stale = (Date.now()-lastEsp) > 45000;
+    if(stale && !wasStale) addEvent(new Date(),'conexion','El ESP32 dejó de reportar (más de 45 s sin datos)');
+    if(!stale && wasStale) addEvent(new Date(),'conexion','El ESP32 volvió a reportar');
+    wasStale = stale;
+    setPill('pEsp', stale?'bad':'ok', stale?'ESP32: sin reporte':'ESP32: en línea');
+    $('plantTag').textContent = stale ? 'sin reporte' : 'en vivo · '+Math.round((Date.now()-lastEsp)/1000)+' s';
+  }
+}
+setInterval(()=>{ tick(); if(S['etapa']) renderAlerts(); },1000);
+function setPill(id,cls,txt){ const p=$(id); p.className='pill '+(cls||''); p.innerHTML='<i></i>'+txt; }
+
+/* ---------- piezas fijas ---------- */
+(function build(){
+  let g=''; for(let i=0;i<16;i++) g+=`<rect class="tooth" x="168" y="124" width="4" height="8" rx="1" transform="rotate(${i*22.5} 170 172)"/>`; $('teeth').innerHTML=g;
+  let k=''; [0,20,40,60].forEach(v=>{ const a=Math.PI*(1-v/60), x=100+60*Math.cos(a), y=112-60*Math.sin(a); k+=`<text class="tk" x="${x.toFixed(1)}" y="${(y+3).toFixed(1)}" text-anchor="middle">${v}</text>`; }); $('gTicks').innerHTML=k;
+  gaugeMark('gLim',T_LIMIT); gaugeMark('gSp',40);
+  $('steps').innerHTML = STEPS.map((s,i)=>`<div class="st" id="st-${i}"><span class="n">${i+1}</span><div><div class="tt">${s.t}</div><div class="ds">${s.d}</div></div><span class="bd" id="sb-${i}">pendiente</span></div>`).join('');
+  $('watch').innerHTML = FAULTS.map(f=>`<span id="w-${f.bit}">${f.short}</span>`).join('')+`<span id="w-${PAUSE_BIT}">Pausa</span>`;
+})();
+function gaugeMark(id,v){ const a=Math.PI*(1-Math.min(60,Math.max(0,v))/60), e=$(id);
+  e.setAttribute('x1',(100+68*Math.cos(a)).toFixed(1)); e.setAttribute('y1',(112-68*Math.sin(a)).toFixed(1));
+  e.setAttribute('x2',(100+86*Math.cos(a)).toFixed(1)); e.setAttribute('y2',(112-86*Math.sin(a)).toFixed(1)); }
+
+/* ---------- eventos ---------- */
+function addEvent(t,type,desc){ events.push({t,type,desc}); }
+
+/* ---------- entrada de datos ---------- */
+function ingest(feed, value, t, quiet){
+  const v = String(value).trim();
+  const prev = S[feed];
+  const newer = !prev || t >= prev.t;
+  raw.push({t,feed,v});
+  // eventos a partir de cambios reales
+  if(feed==='comando') addEvent(t,'orden','Orden enviada desde el tablero: '+v.toUpperCase());
+  if(feed==='setpoints' && (!prev || prev.v!==v)){ const p=v.split(';'); addEvent(t,'orden',`Parámetros: ${p[0]||'—'} °C · ${p[1]||'—'} min escarificado`+(p[2]?` · ${p[2]} pasos/s`:'')); }
+  if(newer){
+    if(feed==='etapa' && (!prev || prev.v!==v)){
+      const e=+v; const ty = e===6?'falla': e===5?'falla': e===4?'ok':'proceso';
+      addEvent(t,ty,'Etapa: '+(ETAPA[e]||e)+(e===4?' · ciclo completado':''));
+    }
+    if(feed==='alarmas'){
+      const a=+v, b=prev?+prev.v:0;
+      FAULTS.forEach(f=>{ if((a&f.bit)&&!(b&f.bit)) addEvent(t,'falla',f.name); if(!(a&f.bit)&&(b&f.bit)&&prev) addEvent(t,'proceso','Se normalizó: '+f.name); });
+      if((a&PAUSE_BIT)&&!(b&PAUSE_BIT)) addEvent(t,'alerta','Ciclo en pausa');
+      if(!(a&PAUSE_BIT)&&(b&PAUSE_BIT)&&prev) addEvent(t,'proceso','Ciclo reanudado');
+    }
+    if(feed==='actuadores' && prev){
+      const a=+v,b=+prev.v;
+      if((a&ACT.c1)!==(b&ACT.c1)) addEvent(t,'proceso', a&ACT.c1?'Compuerta C-1 abierta: descarga de semilla al tanque':'Compuerta C-1 cerrada');
+      if((a&ACT.c2)!==(b&ACT.c2)) addEvent(t,'proceso', a&ACT.c2?'Compuerta C-2 abierta':'Compuerta C-2 cerrada');
+    }
+    if(feed==='temp-agua'){ const n=parseFloat(v), p=prev?parseFloat(prev.v):null; if(n>T_LIMIT && !(p>T_LIMIT)) addEvent(t,'alerta',`Temperatura fuera de límite: ${n.toFixed(1)} °C`); }
+    if(feed==='voltaje'){ const n=parseFloat(v), p=prev?parseFloat(prev.v):null; if(n<10 && !(p<10)) addEvent(t,'alerta',`Voltaje bajo medido: ${n.toFixed(1)} V`); }
+    S[feed]={v,t};
+  }
+  if(feed!=='comando' && feed!=='setpoints'){ if(!lastEsp || t>lastEsp) lastEsp=t; }
+  if(!quiet) render();
+}
+
+/* ---------- ciclos (derivados de la etapa y del motor) ---------- */
+function cycles(){
+  const et = raw.filter(r=>r.feed==='etapa').sort((a,b)=>a.t-b.t);
+  const acts = raw.filter(r=>r.feed==='actuadores').sort((a,b)=>a.t-b.t);
+  const out=[]; let cur=null, prevE=null;
+  et.forEach(r=>{
+    const e=+r.v;
+    if(e===1 && prevE!==1){ if(cur){ cur.end=r.t; cur.res='detenido'; out.push(cur); } cur={start:r.t, seen:new Set([1]), last:1}; }
+    else if(cur){
+      cur.seen.add(e); if(e>=1&&e<=3) cur.last=e;
+      if(e===4){ cur.end=r.t; cur.res='completo'; out.push(cur); cur=null; }
+      else if(e===5||e===6){ cur.end=r.t; cur.res='falla'; out.push(cur); cur=null; }
+      else if(e===0){ cur.end=r.t; cur.res='detenido'; out.push(cur); cur=null; }
+    }
+    prevE=e;
+  });
+  if(cur){ cur.end=null; cur.res='en curso'; out.push(cur); }
+  out.forEach(c=>{
+    const end = c.end || new Date(); let on=null, ms=0;
+    acts.forEach(a=>{ if(a.t>end) return; const m=(+a.v & ACT.motor)!==0;
+      if(a.t<c.start){ on = m ? c.start : null; return; }
+      if(m && on===null) on=a.t; if(!m && on!==null){ ms+=a.t-on; on=null; } });
+    if(on!==null) ms+=end-on;
+    c.motorMin = ms/60000; c.durMin=(end-c.start)/60000;
+  });
+  return out;
+}
+
+/* ---------- render ---------- */
+function setKpi(id,cls,v,s,na){ const k=$(id); k.className='kpi '+(cls||''); const vv=$(id+'V'); vv.innerHTML=v; vv.classList.toggle('na',!!na); if(s!==undefined) $(id+'S').textContent=s; }
+
+function render(){
+  const E = S['etapa'] ? +S['etapa'].v : null;
+  const al = alarms(), paused = !!(al & PAUSE_BIT), faults = FAULTS.filter(f=>al & f.bit);
+  const P = sp(), goal = P?.temp ?? 40;
+  const T = num('temp-agua'), I = num('corriente'), V = num('voltaje'), R = num('rssi');
+  const motor = actOn(ACT.motor), vent = actOn(ACT.vent), c1 = actOn(ACT.c1), c2 = actOn(ACT.c2), heat = actOn(ACT.calent), rele = actOn(ACT.rele);
+
+  // estado general
+  if(E===null) setKpi('kState','', 'Sin datos','sin reporte de la máquina',true);
+  else { const cls = E>=5?'bad': E===4?'ok': paused?'warn': E>=1?'run':''; setKpi('kState',cls, ETAPA[E].replace('Tratamiento térmico','Tratamiento')+(paused?' · pausa':''), faults.length? faults[0].name : E===0?'lista para iniciar':'ciclo en curso'); }
+  // disco
+  const hz = P?.hz;
+  if(motor===null) setKpi('kRpm','','Sin datos','velocidad comandada',true);
+  else if(!motor) setKpi('kRpm','', '0<small>rpm</small>', hz? `detenido · ${Math.round(hz*60/STEPS_REV)} rpm al girar`:'detenido');
+  else setKpi('kRpm','run', hz? Math.round(hz*60/STEPS_REV)+'<small>rpm</small>' : 'Girando', hz? 'comandada (sin sensor de giro)':'velocidad no reportada');
+  // temperatura
+  if(T===null) setKpi('kTemp','','Sin datos','TT-01 · DS18B20',true);
+  else { setKpi('kTemp', T>T_LIMIT?'bad': Math.abs(T-goal)<=1?'ok':'warn', T.toFixed(1)+'<small>°C</small>', `objetivo ${goal.toFixed(1)} °C`); $('kTempB').style.width=Math.min(100,T/60*100)+'%'; }
+  // tiempo
+  const tr = num('tiempo-restante');
+  if(E===1 || E===3){ const tot = E===1 ? (P?.min? P.min*60:null) : REMOJO;
+    if(tr!==null){ setKpi('kTime','run', mmss(tr), E===1?'escarificado':'tratamiento térmico'); $('kTimeB').style.width = tot? Math.min(100,(1-tr/tot)*100)+'%':'0'; }
+  } else if(E===2) { setKpi('kTime','warn','En espera','hasta llegar a '+goal.toFixed(1)+' °C'); $('kTimeB').style.width='0'; }
+  else if(E===4) { setKpi('kTime','ok','00:00','ciclo terminado'); $('kTimeB').style.width='100%'; }
+  else if(E!==null){ setKpi('kTime','','—','sin ciclo activo'); $('kTimeB').style.width='0'; }
+  // ciclos
+  const cy = cycles(), today=new Date().toDateString(), cyT = cy.filter(c=>c.start.toDateString()===today);
+  if(E!==null) setKpi('kCyc', '', `${cyT.filter(c=>c.res==='completo').length}<small>/ ${cyT.length}</small>`, 'completados / iniciados hoy');
+  // motor
+  if(motor===null) setKpi('kMot','','Sin datos','corriente ACS712',true);
+  else { const bad = I!==null && motor && (I>2 || I<0.2); setKpi('kMot', bad?'bad': motor?'run':'', motor?'Girando':'Detenido', I!==null? `${I.toFixed(2)} A · EN ${motor?'activo':'inactivo'}`:'sin lectura de corriente'); }
+  // ventilación
+  if(vent===null) setKpi('kFan','','Sin datos','extracción de rebabas',true); else setKpi('kFan', vent?'run':'', vent?'Encendida':'Apagada','extracción de rebabas');
+  // compuertas
+  if(c1===null) setKpi('kGate','','Sin datos','C-1 · C-2',true); else setKpi('kGate', c1||c2?'ok':'', `C1 ${c1?'<span style="color:var(--green)">ABR</span>':'CER'}`, `C-2 ${c2?'abierta':'cerrada'} · servos 0°/90°`);
+  // red
+  if(R===null) setKpi('kNet','','Sin datos','señal WiFi del ESP32',true);
+  else { const q = R>=-60?'excelente':R>=-70?'buena':R>=-80?'regular':'débil'; setKpi('kNet', R>=-70?'ok':R>=-80?'warn':'bad', Math.round(R)+'<small>dBm</small>', 'señal '+q); }
+
+  // ---------- planta ----------
+  const pz = paused || E===5 || E===6;
+  $('disc').classList.toggle('spin', !!motor && !pz);
+  $('fan').classList.toggle('spin', !!vent && !pz);
+  $('air').classList.toggle('on', !!vent && !pz);
+  $('gate1').classList.toggle('open', !!c1);
+  $('gate2').classList.toggle('open', !!c2);
+  $('heater').classList.toggle('on', !!heat);
+  $('flow1').classList.toggle('on', E===1 && !!motor && !pz);
+  $('flow2').classList.toggle('on', !!c1);
+  $('lblG1').textContent = c1===null ? 'servo GPIO15' : c1 ? 'ABIERTA · 90°' : 'cerrada · 0°';
+  const noWater = !!(al & 4);
+  $('water').setAttribute('y', noWater?398:318); $('water').setAttribute('height', noWater?16:96);
+  $('float').setAttribute('cy', noWater?392:322);
+  tag('tgMot', motor===null?'—': (motor?'GIRA':'PARADO')+(I!==null?' · '+I.toFixed(2)+' A':''), motor, !!(al&(32|64)));
+  tag('tgFan', vent===null?'—': vent?'ENCENDIDO':'APAGADO', vent);
+  tag('tgHeat', heat===null?'—': (heat?'CALENTANDO':'APAGADO')+(rele!==null?(rele?' · K1':' · K1 OFF'):''), heat);
+  tag('tgTemp', T===null?'—': T.toFixed(1)+' °C', T!==null, (T!==null&&T>T_LIMIT) || !!(al&1));
+  tag('tgLvl', S['alarmas']? (noWater?'SIN AGUA':'NIVEL OK') : '—', S['alarmas']&&!noWater, noWater);
+
+  // ---------- proceso ----------
+  const curCycle = cy.length ? cy[cy.length-1] : null;
+  const active = curCycle && (curCycle.res==='en curso' || (curCycle.res==='completo' && E===4) || ((E===5||E===6) && curCycle.end && S['etapa'].t-curCycle.end<1000));
+  const seen = active ? curCycle.seen : new Set();
+  const c1Seen = active && raw.some(r=>r.feed==='actuadores' && r.t>=curCycle.start && (+r.v & ACT.c1));
+  let doneCount=0;
+  STEPS.forEach((s,i)=>{
+    const el=$('st-'+i), bd=$('sb-'+i); let st='pendiente', cls='';
+    if(s.k==='carga'){ if(active){ st='completada'; cls='done'; } else if(E===0){ st='en espera'; cls='hold'; } }
+    else if(s.k==='desc'){ if(c1 && E===2){ st='activa'; cls='active'; } else if(c1Seen && (E>=3)){ st='completada'; cls='done'; } }
+    else {
+      if(E===s.k){ st = s.k===4 ? 'completada' : paused ? 'en pausa' : 'activa'; cls = s.k===4 ? 'done' : paused ? 'hold' : 'active'; if(s.k===4) st='lista para extraer'; }
+      else if(active && seen.has(s.k) && (E>s.k && E<=4)){ st='completada'; cls='done'; }
+      else if(s.k===2 && E===3 && active && !seen.has(2)){ st='completada'; cls='done'; }
+    }
+    if((E===5||E===6) && active){ if(typeof s.k==='number' && s.k<curCycle.last && seen.has(s.k)){ st='completada'; cls='done'; } else if(s.k===curCycle.last){ st='interrumpida'; cls='err'; } }
+    el.className='st '+cls; bd.textContent=st; if(cls==='done') doneCount++;
+  });
+  $('progBar').style.width = (doneCount/STEPS.length*100)+'%';
+  $('cycTag').textContent = !active ? (E===null?'sin ciclo':'sin ciclo activo') : curCycle.res==='en curso' ? 'ciclo en curso · desde '+hm(curCycle.start) : 'ciclo '+hm(curCycle.start)+' · '+curCycle.res;
+
+  // ---------- medición ----------
+  gaugeMark('gSp', goal);
+  if(T!==null){ $('gNum').textContent=T.toFixed(1); $('gArc').setAttribute('stroke-dasharray', `${Math.min(100,Math.max(0,T/60*100)).toFixed(1)} 100`); $('meaT').textContent=T.toFixed(1)+' °C'; $('measTag').textContent='TT-01 · '+fT(S['temp-agua'].t); }
+  $('cfgT').textContent = P?.temp!=null ? P.temp.toFixed(1)+' °C' : '— °C';
+  if(I!==null){ $('mI').firstChild.nodeValue=I.toFixed(2); const b=$('mIb'); b.style.width=Math.min(100,I/2.5*100)+'%'; b.style.background = (I>2)?'var(--red)':(motor&&I<0.2)?'var(--amber)':''; }
+  if(V!==null){ $('mV').firstChild.nodeValue=V.toFixed(1); const b=$('mVb'); b.style.width=Math.min(100,V/14*100)+'%'; b.style.background = V<10?'var(--red)':''; }
+  if(R!==null){ $('mR').firstChild.nodeValue=Math.round(R); $('mRb').style.width=Math.min(100,Math.max(0,(R+100)/60*100))+'%'; }
+
+  // ---------- parámetros ----------
+  $('spEcho').textContent = P ? `${P.temp??'—'} °C · ${P.min??'—'} min`+(P.hz?` · ${P.hz} pasos/s`:'') : 'sin dato';
+  $('rdHz').textContent = P?.hz ? `${P.hz} pasos/s ≈ ${Math.round(P.hz*60/STEPS_REV)} rpm` : '— pasos/s';
+  controls(E, paused);
+  renderAlerts(); renderLog(); drawAll(); tick();
+}
+function tag(id, txt, on, bad){ const g=$(id); g.classList.toggle('on',!!on); g.classList.toggle('bad',!!bad); $(id+'V').textContent=txt; }
+
+/* ---------- mandos ---------- */
+function supervising(){ return !!demo || !!(client && client.connected); }
+function controls(E, paused){
+  const ok=supervising(), run = E===1||E===2||E===3;
+  $('cStart').disabled = !ok || E===null || run || E>=5;
+  $('cPause').disabled = !ok || !run;
+  $('cPause').querySelector('span').textContent = paused ? 'Reanudar' : 'Pausar';
+  $('cPause').querySelector('use').setAttribute('href', paused ? '#i-play' : '#i-pause');
+  $('cReset').disabled = !ok || !(E===4||E===5||E===6);
+  $('cStop').disabled  = !ok;
+  const lock = !ok || run; ['spT','spM','spSend'].forEach(i=>$(i).disabled=lock); document.querySelectorAll('.field button').forEach(b=>b.disabled=lock);
+  $('ctlTag').textContent = !ok ? 'bloqueado' : demo ? 'demostración' : run ? 'ciclo en curso' : 'habilitado';
+  if(!ok) $('cFb').textContent='Inicia la supervisión para habilitar los mandos.';
+}
+function send(feed,val){
+  if(demo){ demo.handle(feed,String(val)); return true; }
+  if(!client || !client.connected){ toast('Sin conexión con Adafruit IO'); return false; }
+  client.publish(`${user}/feeds/${feed}`, String(val)); return true;
+}
+function cmd(c, txt){ if(send('comando',c)){ $('cFb').textContent=`${txt} enviada a las ${fT(new Date())}. La máquina confirma con su cambio de estado.`; toast(txt+' enviada'); } }
+$('cStart').onclick=()=>cmd('INICIAR','Orden de inicio');
+$('cPause').onclick=()=> (alarms()&PAUSE_BIT) ? cmd('REANUDAR','Orden de reanudar') : cmd('PAUSAR','Orden de pausa');
+$('cReset').onclick=()=>cmd('RESET','Reconocimiento');
+$('cStop').onclick=()=>cmd('PARO','Paro de emergencia');
+document.querySelectorAll('.field button').forEach(b=>b.addEventListener('click',()=>{ const i=$(b.dataset.t), c=parseFloat(i.value), base=isNaN(c)?(b.dataset.t==='spM'?0:40):c; i.value=Math.min(+i.max,Math.max(+i.min,base+parseFloat(b.dataset.d))); }));
+$('spForm').addEventListener('submit',e=>{ e.preventDefault();
+  const t=parseFloat($('spT').value), m=parseFloat($('spM').value);
+  if(isNaN(t)||isNaN(m)){ toast('Escribe temperatura y minutos'); return; }
+  if(t>=T_LIMIT){ toast('Debe quedar abajo del límite de 50 °C'); return; }
+  if(send('setpoints',`${t};${m}`)) toast(`Parámetros enviados: ${t} °C · ${m} min`);
+});
+
+/* ---------- alertas ---------- */
+function renderAlerts(){
+  const list=[], al=alarms(), E=S['etapa']?+S['etapa'].v:null, now=Date.now();
+  const icon = k => `<svg class="ico"><use href="#i-${k}"/></svg>`;
+  if(!supervising()) list.push({c:'info',i:'info',b:'Supervisión detenida',s:'No se están recibiendo datos de la máquina.'});
+  else {
+    if(client && !client.connected) list.push({c:'bad',i:'link',b:'Pérdida de conexión con Adafruit IO',s:'Reintentando cada 5 s.'});
+    if(lastEsp && now-lastEsp>45000) list.push({c:'bad',i:'link',b:'El ESP32 no reporta',s:'Último dato a las '+fT(lastEsp)+'.',t:lastEsp});
+    if(!lastEsp) list.push({c:'info',i:'info',b:'Esperando datos del ESP32',s:'Todavía no llega ninguna lectura.'});
+    FAULTS.forEach(f=>{ if(al&f.bit) list.push({c:'bad',i:'alert',b:f.name,s:'Reportada por la máquina.',t:S['alarmas'].t}); });
+    if(al&PAUSE_BIT) list.push({c:'warn',i:'pause',b:'Ciclo en pausa',s:'Disco y ventilador detenidos.',t:S['alarmas'].t});
+    const T=num('temp-agua'), P=sp();
+    if(T!==null && T>T_LIMIT && !(al&2)) list.push({c:'bad',i:'alert',b:'Temperatura fuera de límite',s:T.toFixed(1)+' °C medidos, límite 50 °C.'});
+    if(T!==null && E===3 && P?.temp!=null && Math.abs(T-P.temp)>2) list.push({c:'warn',i:'alert',b:'Temperatura fuera de rango',s:`${T.toFixed(1)} °C durante el tratamiento (objetivo ${P.temp} ± 2 °C).`});
+    if(E===4) list.push({c:'ok',i:'check',b:'Ciclo completado',s:'La semilla está lista para extraer con la canastilla.',t:S['etapa'].t});
+  }
+  if(supervising() && !list.length) list.push({c:'ok',i:'check',b:'Sin alertas',s:'Todas las variables vigiladas están en orden.'});
+  $('alerts').innerHTML = list.map(a=>`<div class="al ${a.c}">${icon(a.i)}<div><b>${a.b}</b><span>${a.s}</span></div><time>${a.t?fT(new Date(a.t)):''}</time></div>`).join('');
+  const nb=list.filter(a=>a.c==='bad').length; $('alTag').textContent = !supervising()?'—': nb? nb+' crítica'+(nb>1?'s':'') : 'normal';
+  FAULTS.concat([{bit:PAUSE_BIT}]).forEach(f=>{ const e=$('w-'+f.bit); e.className = (al&f.bit)? (f.bit===PAUSE_BIT?'pz':'on') : ''; });
+}
+
+/* ---------- registro ---------- */
+const TYPE_LBL={falla:'Falla',alerta:'Alerta',proceso:'Proceso',orden:'Orden',conexion:'Conexión',ok:'Completado'};
+const FEED_LBL={'temp-agua':'Temperatura agua (°C)','tiempo-restante':'Tiempo restante (s)','etapa':'Etapa','actuadores':'Actuadores (bits)','alarmas':'Alarmas (bits)','rssi':'RSSI (dBm)','corriente':'Corriente (A)','voltaje':'Voltaje (V)','comando':'Comando','setpoints':'Parámetros'};
+function renderLog(){
+  const mode=$('logMode').value; $('evFilter').hidden = mode!=='ev';
+  if(mode==='ev'){
+    $('logHead').innerHTML='<tr><th>Hora</th><th>Tipo</th><th>Descripción</th></tr>';
+    const f=$('evFilter').value;
+    const rows=events.slice().sort((a,b)=>b.t-a.t).filter(e=> f==='all' || e.type===f || (f==='proceso'&&e.type==='ok')).slice(0,300);
+    $('logBody').innerHTML = rows.length ? rows.map(e=>`<tr><td class="t">${fD(e.t)}<br>${fT(e.t)}</td><td><span class="ty ${e.type}">${TYPE_LBL[e.type]}</span></td><td>${e.desc}</td></tr>`).join('') : `<tr><td colspan="3" class="empty">${supervising()?'Sin eventos con ese filtro.':'Sin eventos. Inicia la supervisión para ver la actividad de la máquina.'}</td></tr>`;
+  } else {
+    $('logHead').innerHTML='<tr><th>Hora</th><th>Feed</th><th>Valor</th></tr>';
+    const rows=raw.slice().sort((a,b)=>b.t-a.t).slice(0,300);
+    $('logBody').innerHTML = rows.length ? rows.map(r=>`<tr><td class="t">${fD(r.t)}<br>${fT(r.t)}</td><td>${FEED_LBL[r.feed]||r.feed}</td><td class="mono">${r.v}</td></tr>`).join('') : '<tr><td colspan="3" class="empty">Sin datos.</td></tr>';
+  }
+}
+$('evFilter').onchange=renderLog; $('logMode').onchange=renderLog;
+
+/* ---------- gráficas ---------- */
+const css=getComputedStyle(document.documentElement), C=n=>css.getPropertyValue(n).trim();
+function setup(cv){ const dpr=window.devicePixelRatio||1, W=cv.clientWidth, H=cv.clientHeight; cv.width=W*dpr; cv.height=H*dpr; const x=cv.getContext('2d'); x.setTransform(dpr,0,0,dpr,0,0); x.clearRect(0,0,W,H); x.font='500 10px "JetBrains Mono",monospace'; return {x,W,H}; }
+function empty(x,W,H,msg){ x.fillStyle=C('--text-3'); x.font='500 12px Manrope,sans-serif'; x.textAlign='center'; x.fillText(msg,W/2,H/2); x.textAlign='left'; }
+const SER={
+  'temp-agua':{t:'Temperatura del agua',u:'°C',min:0,max:60,step:10,col:'#35D6E8',refs:()=>[{v:sp()?.temp??40,c:'#F5B341',l:'objetivo'},{v:50,c:'#F0524D',l:'límite'}]},
+  'corriente':{t:'Corriente del motor',u:'A',min:0,max:2.5,step:.5,col:'#367CFF',refs:()=>[{v:.2,c:'#F5B341',l:'mín'},{v:2,c:'#F0524D',l:'máx'}]},
+  'voltaje':  {t:'Voltaje de la fuente',u:'V',min:0,max:14,step:2,col:'#21D69A',refs:()=>[{v:10,c:'#F0524D',l:'mín'}]},
+};
+document.querySelectorAll('.seg button').forEach(b=>b.onclick=()=>{ series=b.dataset.s; document.querySelectorAll('.seg button').forEach(o=>o.setAttribute('aria-pressed',o===b)); drawAll(); });
+function drawLine(){
+  const cfg=SER[series]; $('c1Title').textContent=cfg.t;
+  const {x,W,H}=setup($('c1'));
+  const pts=raw.filter(r=>r.feed===series).map(r=>({t:r.t,v:parseFloat(r.v)})).filter(p=>!isNaN(p.v)).sort((a,b)=>a.t-b.t).slice(-300);
+  const L=38,R=10,T=10,B=22,w=W-L-R,h=H-T-B, y=v=>T+h-(v-cfg.min)/(cfg.max-cfg.min)*h;
+  for(let v=cfg.min; v<=cfg.max+1e-9; v+=cfg.step){ x.strokeStyle='rgba(143,163,196,.12)'; x.beginPath(); x.moveTo(L,y(v)); x.lineTo(W-R,y(v)); x.stroke(); x.fillStyle=C('--text-3'); x.fillText(+v.toFixed(1)+'',4,y(v)+3); }
+  const refs=cfg.refs(); $('c1Leg').innerHTML = refs.map(r=>`<b style="color:${r.c}">- -</b> ${r.l} ${r.v} ${cfg.u}`).join(' · ');
+  refs.forEach(r=>{ x.setLineDash([4,4]); x.strokeStyle=r.c; x.beginPath(); x.moveTo(L,y(r.v)); x.lineTo(W-R,y(r.v)); x.stroke(); x.setLineDash([]); });
+  if(pts.length<2){ $('c1Info').textContent = pts.length? '1 lectura' : 'Sin lecturas'; empty(x,W,H,'Sin lecturas todavía'); return; }
+  const t0=+pts[0].t, t1=+pts[pts.length-1].t, X=t=>L+(+t-t0)/Math.max(1,t1-t0)*w;
+  // eje de tiempo
+  x.fillStyle=C('--text-3'); const n=Math.max(2,Math.min(6,Math.floor(w/90)));
+  for(let i=0;i<=n;i++){ const tt=t0+(t1-t0)*i/n, xx=L+w*i/n, s=fT(new Date(tt)); x.textAlign = i===0?'left': i===n?'right':'center'; x.fillText(s,xx,H-6); } x.textAlign='left';
+  const g=x.createLinearGradient(0,T,0,T+h); g.addColorStop(0,cfg.col+'55'); g.addColorStop(1,cfg.col+'00');
+  x.beginPath(); pts.forEach((p,i)=> i?x.lineTo(X(p.t),y(p.v)):x.moveTo(X(p.t),y(p.v))); x.lineTo(X(t1),y(cfg.min)); x.lineTo(X(t0),y(cfg.min)); x.closePath(); x.fillStyle=g; x.fill();
+  x.beginPath(); pts.forEach((p,i)=> i?x.lineTo(X(p.t),y(p.v)):x.moveTo(X(p.t),y(p.v))); x.strokeStyle=cfg.col; x.lineWidth=2; x.lineJoin='round'; x.stroke(); x.lineWidth=1;
+  const l=pts[pts.length-1]; x.beginPath(); x.arc(X(l.t),y(l.v),4,0,7); x.fillStyle=cfg.col; x.fill(); x.beginPath(); x.arc(X(l.t),y(l.v),8,0,7); x.fillStyle=cfg.col+'33'; x.fill();
+  $('c1Info').textContent = `${pts.length} lecturas · ${fT(pts[0].t)} a ${fT(l.t)} · último ${l.v} ${cfg.u}`;
+}
+function drawBars(id, info, data, val, color, unit, emptyMsg){
+  const {x,W,H}=setup($(id));
+  if(!data.length){ empty(x,W,H,emptyMsg); $(info).textContent=emptyMsg; return; }
+  const L=34,R=8,T=12,B=22,w=W-L-R,h=H-T-B; const mx=Math.max(1,...data.map(val))*1.15;
+  const step = mx>20?10:mx>8?4:mx>4?2:mx>2?1:.5;
+  for(let v=0; v<=mx; v+=step){ const yy=T+h-v/mx*h; x.strokeStyle='rgba(143,163,196,.12)'; x.beginPath(); x.moveTo(L,yy); x.lineTo(W-R,yy); x.stroke(); x.fillStyle=C('--text-3'); x.fillText(+v.toFixed(1)+'',4,yy+3); }
+  const bw=Math.min(34, w/data.length*0.62), gap=w/data.length;
+  data.forEach((d,i)=>{ const v=val(d), bh=v/mx*h, xx=L+gap*i+(gap-bw)/2, yy=T+h-bh;
+    x.fillStyle=color(d); x.beginPath(); x.roundRect ? x.roundRect(xx,yy,bw,bh,[4,4,0,0]) : x.rect(xx,yy,bw,bh); x.fill();
+    x.fillStyle=C('--text-2'); x.textAlign='center'; x.fillText(v.toFixed(1),xx+bw/2,yy-4); x.fillStyle=C('--text-3'); x.fillText(hm(d.start),xx+bw/2,H-6); x.textAlign='left'; });
+  $(info).textContent = `${data.length} ciclo${data.length>1?'s':''} · en ${unit}`;
+}
+function drawAll(){
+  drawLine();
+  const cy=cycles().slice(-8);
+  drawBars('c2','c2Info',cy,c=>c.motorMin,()=> '#367CFF','minutos de motor','Sin ciclos registrados');
+  drawBars('c3','c3Info',cy,c=>c.durMin,c=> c.res==='completo'?'#21D69A': c.res==='falla'?'#F0524D': c.res==='en curso'?'#35D6E8':'#5f7598','minutos de duración','Sin ciclos registrados');
+}
+window.addEventListener('resize',drawAll);
+
+/* ---------- conexión ---------- */
+function resetData(){ raw=[]; events=[]; for(const k in S) delete S[k]; lastEsp=null; wasStale=false; }
+function stopAll(){
+  if(demo){ demo.stop(); demo=null; }
+  if(client){ try{ client.end(true); }catch(e){} client=null; }
+  $('demoStrip').hidden=true; setPill('pIot','', 'IoT: sin supervisión'); setPill('pAio','','Adafruit IO: desconectado'); setPill('pEsp','','ESP32: sin reporte');
+  setSupBtn(false);
+}
+function setSupBtn(on){ const b=$('btnSup'); b.className = on ? '' : 'pri'; b.querySelector('use').setAttribute('href', on?'#i-sq':'#i-play'); b.querySelector('span').textContent = on?'Detener supervisión':'Iniciar supervisión'; }
+async function history(key){
+  let fails=0;
+  await Promise.all(FEEDS.map(async f=>{ try{
+    const r=await fetch(`https://io.adafruit.com/api/v2/${encodeURIComponent(user)}/feeds/${f}/data?limit=400`,{headers:{'X-AIO-Key':key}});
+    if(!r.ok) throw 0; (await r.json()).reverse().forEach(d=> ingest(f,d.value,new Date(d.created_at),true));
+  }catch(e){ fails++; } }));
+  events.sort((a,b)=>a.t-b.t);
+  render(); if(fails) toast(`${fails} feeds sin historial: revisa que existan en Adafruit IO`);
+}
+function connect(u,key){
+  stopAll(); resetData(); render(); user=u;
+  if(typeof mqtt==='undefined'){ toast('No cargó la librería MQTT. Revisa tu internet.'); return; }
+  setSupBtn(true); setPill('pIot','warn','IoT: conectando'); setPill('pAio','warn','Adafruit IO: conectando');
+  client=mqtt.connect('wss://io.adafruit.com:443/mqtt/',{username:u,password:key,clientId:'scada_'+Math.random().toString(16).slice(2,10),reconnectPeriod:5000});
+  client.on('connect',()=>{
+    setPill('pIot','ok','IoT: supervisando'); setPill('pAio','ok','Adafruit IO: conectado');
+    FEEDS.forEach(f=>client.subscribe(`${u}/feeds/${f}`)); client.subscribe(`${u}/errors`); client.subscribe(`${u}/throttle`);
+    addEvent(new Date(),'conexion','Conectado a Adafruit IO como '+u); $('cFb').textContent='Mandos habilitados.';
+    history(key);
+  });
+  client.on('message',(t,p)=>{ const m=p.toString(); if(t.endsWith('/errors')||t.endsWith('/throttle')){ addEvent(new Date(),'alerta','Adafruit IO: '+m.slice(0,120)); toast('Aviso de Adafruit IO'); render(); return; } ingest(t.split('/').pop(), m, new Date()); });
+  client.on('error',e=>{ setPill('pAio','bad','Adafruit IO: error de acceso'); toast('Error: '+(e.message||'revisa usuario y clave')); });
+  client.on('offline',()=>{ setPill('pAio','bad','Adafruit IO: sin conexión'); setPill('pIot','bad','IoT: reconectando'); addEvent(new Date(),'conexion','Se perdió la conexión con Adafruit IO'); render(); });
+}
+const dlg=$('dlg');
+$('btnCfg').onclick=()=>{ $('aioUser').value=load('aioUser'); $('aioKey').value=load('aioKey'); dlg.showModal(); };
+$('btnClose').onclick=()=>dlg.close();
+$('cfgForm').addEventListener('submit',e=>{ e.preventDefault(); const u=$('aioUser').value.trim(), k=$('aioKey').value.trim(); if(!u||!k){ toast('Falta usuario o clave'); return; } store('aioUser',u); store('aioKey',k); dlg.close(); connect(u,k); });
+$('btnSup').onclick=()=>{
+  if(supervising()){ addEvent(new Date(),'conexion','Supervisión detenida por el usuario'); stopAll(); render(); return; }
+  const u=load('aioUser'), k=load('aioKey'); if(u&&k) connect(u,k); else $('btnCfg').click();
+};
+
+/* ==========================================================================
+   MODO DEMOSTRACIÓN — simula la secuencia real del firmware (1 s = 20 s)
+   ========================================================================== */
+function Demo(){
+  const D={et:0,temp:24,esc:0,rem:REMOJO,heat:0,al:0,spT:40,spM:null,hz:800,last:{},n:0,g1:0};
+  const pub=(f,v)=>ingest(f,v,new Date(),true);
+  const echo=()=>pub('setpoints',`${D.spT};${D.spM??''};${D.hz}`);
+  function handle(feed,val){
+    if(feed==='setpoints'){ const [a,b]=val.split(';').map(parseFloat); D.spT=a; D.spM=b; echo(); }
+    if(feed==='comando'){ pub('comando',val);
+      if(val==='INICIAR'){ if(D.et===0){ if(D.spM==null){ toast('Primero envía los parámetros'); } else { D.et=1; D.esc=D.spM*60; D.rem=REMOJO; D.g1=0; } } }
+      if(val==='PAUSAR') D.al|=PAUSE_BIT; if(val==='REANUDAR') D.al&=~PAUSE_BIT;
+      if(val==='PARO'){ D.et=5; D.al=(D.al|128)&~PAUSE_BIT; }
+      if(val==='RESET' && (D.et>=4)){ D.al=0; D.et=0; }
+    }
+    step(true);
+  }
+  function step(hold){
+    const pz=!!(D.al&PAUSE_BIT); D.n++;
+    if(!hold && !pz){
+      if(D.et===1){ D.esc=Math.max(0,D.esc-20); if(!D.esc) D.et=2; }
+      else if(D.et===2 && D.temp>=D.spT){ D.g1=1; D.et=3; }
+      else if(D.et===3){ D.rem=Math.max(0,D.rem-20); if(!D.rem){ D.et=4; D.g1=0; } }
+    }
+    let act=0; const heatOk = D.et>=1 && D.et<=3;
+    if(heatOk){ act|=ACT.rele; if(D.temp<D.spT-.5 || D.et===2) D.heat=1; else if(D.temp>D.spT+.5) D.heat=0; } else D.heat=0;
+    if(D.heat){ act|=ACT.calent; D.temp=Math.min(D.spT+.6,D.temp+.9); } else D.temp=Math.max(24,D.temp-.1);
+    if(D.et===1 && !pz) act|=ACT.motor|ACT.vent;
+    if(D.g1 && D.et===3) act|=ACT.c1;
+    if(!hold){
+      pub('temp-agua',(D.temp+(Math.random()-.5)*.15).toFixed(1));
+      if(D.n%2===0){ pub('corriente',(act&ACT.motor)?(.8+Math.random()*.1).toFixed(2):(Math.random()*.02).toFixed(2)); pub('voltaje',(12+Math.random()*.2).toFixed(1)); }
+      if(D.n%6===1) pub('rssi',-60-Math.round(Math.random()*6));
+      if(D.et===1) pub('tiempo-restante',D.esc); else if(D.et===3) pub('tiempo-restante',D.rem);
+    }
+    if(D.last.et!==D.et){ pub('etapa',D.et); D.last.et=D.et; }
+    if(D.last.act!==act){ pub('actuadores',act); D.last.act=act; }
+    if(D.last.al!==D.al){ pub('alarmas',D.al); D.last.al=D.al; }
+    render();
+  }
+  echo(); step();
+  const id=setInterval(()=>step(false),1000);
+  return {handle,stop:()=>clearInterval(id)};
+}
+$('btnDemo').onclick=()=>{
+  dlg.close(); stopAll(); resetData();
+  $('demoStrip').hidden=false; setSupBtn(true);
+  setPill('pIot','demo','IoT: demostración'); setPill('pAio','demo','Adafruit IO: no usado'); setPill('pEsp','demo','ESP32: simulado');
+  addEvent(new Date(),'conexion','Inicio de modo demostración (datos simulados)');
+  demo=Demo(); $('cFb').textContent='Demostración: ajusta los minutos de escarificado, envía y presiona Iniciar ciclo.';
+};
+
+/* ---------- CSV ---------- */
+$('btnCsv').onclick=()=>{
+  const ev=$('logMode').value==='ev';
+  const rows = ev ? [['fecha','hora','tipo','descripcion']].concat(events.slice().sort((a,b)=>a.t-b.t).map(e=>[fD(e.t),fT(e.t),TYPE_LBL[e.type],e.desc]))
+                  : [['fecha','hora','feed','valor']].concat(raw.slice().sort((a,b)=>a.t-b.t).map(r=>[fD(r.t),fT(r.t),r.feed,r.v]));
+  if(rows.length<2){ toast('Todavía no hay datos'); return; }
+  const a=document.createElement('a'); a.href=URL.createObjectURL(new Blob(['﻿'+rows.map(r=>r.map(c=>`"${String(c).replace(/"/g,'""')}"`).join(',')).join('\n')],{type:'text/csv'}));
+  a.download=`escarificadora_${ev?'eventos':'datos'}_${new Date().toISOString().slice(0,10)}.csv`; a.click(); setTimeout(()=>URL.revokeObjectURL(a.href),2000);
+};
+
+/* ---------- arranque ---------- */
+render();
+if(load('aioUser') && load('aioKey')) connect(load('aioUser'), load('aioKey'));
+</script>
+</body>
+</html>
